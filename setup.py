@@ -74,7 +74,7 @@ setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='arsalanriaz',
-    url='https://github.com/arsalanriaz/txoptimus',
+    url='https://github.com/arsalanqazi/txoptimus',
     python_requires='>=3.8',
     packages=find_packages(),
     include_package_data=True,
