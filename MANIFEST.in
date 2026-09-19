@@ -1,0 +1,7 @@
+include LICENSE
+include README.md
+include requirements.txt
+include environment.yml
+recursive-include txoptimus/core/data_splits *.csv *.obo *.py
+recursive-include txoptimus/core/graphmask *.py
+recursive-include txoptimus/resources *.txt *.json
