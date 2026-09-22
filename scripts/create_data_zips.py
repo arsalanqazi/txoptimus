@@ -51,38 +51,44 @@ OPTIMUS_DATA_FILES = [
     "data/kg.csv",
     "data/node.csv",
     "data/edges.csv",
-    # Cell proliferation split
-    "data/cell_proliferation_42/train.csv",
-    "data/cell_proliferation_42/valid.csv",
-    "data/cell_proliferation_42/test.csv",
-    # Directed subgraph
-    "data/cell_proliferation_kg/kg_directed.csv",
     # Disease list
     "data/disease_files/cell_proliferation.csv",
-    # Model checkpoint
-    "model_ckpt/config.pkl",
-    "model_ckpt/model.pt",
+    # NOTE: Splits (cell_proliferation_42/) are NOT shipped.
+    # The engine generates them from kg_directed.csv on first run,
+    # ensuring correct per-node-type indices (x_idx/y_idx).
 ]
 
+# Specifically map the finetuned Optimus weights to the expected root path
+OPTIMUS_MODEL_FILES = {
+    "model_ckpt/optimus_finetuned/config.pkl": "model_ckpt/config.pkl",
+    "model_ckpt/optimus_finetuned/model.pt": "model_ckpt/model.pt",
+}
 
-def create_zip(root_dir: str, file_list: list, embeddings_dir: str,
+def create_zip(root_dir: str, file_list: list, model_dict: dict, embeddings_dir: str,
                kg_label: str, output_path: str):
     """
     Create a zip archive containing:
-      1. Data and model files from the KG directory
-      2. Pre-computed PubMedBERT embeddings
+      1. Data files from the KG directory
+      2. Mapped model files
+      3. Pre-computed PubMedBERT embeddings
     """
     missing = []
     for f in file_list:
         full = os.path.join(root_dir, f)
         if not os.path.exists(full):
             missing.append(f)
+            
+    for src, _ in model_dict.items():
+        full = os.path.join(root_dir, src)
+        if not os.path.exists(full):
+            missing.append(src)
 
     if missing:
-        print(f"\n  WARNING: The following files are missing from {root_dir}:")
+        print(f"\n  ERROR: The following required files are missing from {root_dir}:")
         for m in missing:
             print(f"    - {m}")
-        print("  These files will be SKIPPED.\n")
+        print("  Aborting! Incomplete archives cannot be created.")
+        sys.exit(1)
 
     # Check embeddings exist
     emb_file = os.path.join(embeddings_dir, f"disease_embeddings_{kg_label}.pt")
@@ -101,7 +107,7 @@ def create_zip(root_dir: str, file_list: list, embeddings_dir: str,
     total_size = 0
 
     with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        # Add data and model files
+        # Add data files
         for f in file_list:
             full = os.path.join(root_dir, f)
             if os.path.exists(full):
@@ -109,6 +115,15 @@ def create_zip(root_dir: str, file_list: list, embeddings_dir: str,
                 total_size += fsize
                 print(f"    Adding: {f} ({fsize:.1f} MB)")
                 zf.write(full, arcname=f)
+
+        # Add mapped model files
+        for src, arcname in model_dict.items():
+            full = os.path.join(root_dir, src)
+            if os.path.exists(full):
+                fsize = os.path.getsize(full) / (1024 * 1024)
+                total_size += fsize
+                print(f"    Adding: {src} -> {arcname} ({fsize:.1f} MB)")
+                zf.write(full, arcname=arcname)
 
         # Add embeddings
         for src, arcname in [
@@ -129,9 +144,11 @@ def create_zip(root_dir: str, file_list: list, embeddings_dir: str,
 
 def main():
     parser = argparse.ArgumentParser(description="Create TxOptimus data zip archives for S3")
-    parser.add_argument("--prime_root", type=str, required=True,
+    parser.add_argument("--kg", type=str, choices=["all", "optimus", "prime"], default="all",
+                        help="Which KG zip archive to create: 'optimus', 'prime', or 'all' (default: all)")
+    parser.add_argument("--prime_root", type=str, default=None,
                         help="Root directory of TxGNN_Prime (contains data/ and model_ckpt/)")
-    parser.add_argument("--optimus_root", type=str, required=True,
+    parser.add_argument("--optimus_root", type=str, default=None,
                         help="Root directory of TxGNN_Optimus (contains data/ and model_ckpt/)")
     parser.add_argument("--embeddings_dir", type=str, required=True,
                         help="Directory containing pre-computed embedding files")
@@ -139,33 +156,50 @@ def main():
                         help="Directory to write zip archives")
     args = parser.parse_args()
 
+    if args.kg in ["all", "prime"] and not args.prime_root:
+        parser.error("--prime_root is required when --kg is 'all' or 'prime'")
+    if args.kg in ["all", "optimus"] and not args.optimus_root:
+        parser.error("--optimus_root is required when --kg is 'all' or 'optimus'")
+
     os.makedirs(args.output_dir, exist_ok=True)
 
     print("=" * 60)
     print(" TxOptimus Data Zip Builder")
     print("=" * 60)
 
+    prime_size = None
+    optimus_size = None
+
     # --- Prime ---
-    print(f"\n--- PrimeKG ({args.prime_root}) ---")
-    prime_zip = os.path.join(args.output_dir, "txoptimus_prime_data.zip")
-    prime_size = create_zip(
-        args.prime_root, PRIME_DATA_FILES,
-        args.embeddings_dir, "prime", prime_zip
-    )
+    if args.kg in ["all", "prime"]:
+        print(f"\n--- PrimeKG ({args.prime_root}) ---")
+        prime_zip = os.path.join(args.output_dir, "txoptimus_prime_data.zip")
+        prime_model_dict = {
+            "model_ckpt/config.pkl": "model_ckpt/config.pkl",
+            "model_ckpt/model.pt": "model_ckpt/model.pt",
+        }
+        prime_data_files = [f for f in PRIME_DATA_FILES if not f.startswith("model_ckpt/")]
+        prime_size = create_zip(
+            args.prime_root, prime_data_files, prime_model_dict,
+            args.embeddings_dir, "prime", prime_zip
+        )
 
     # --- Optimus ---
-    print(f"\n--- OptimusKG ({args.optimus_root}) ---")
-    optimus_zip = os.path.join(args.output_dir, "txoptimus_optimus_data.zip")
-    optimus_size = create_zip(
-        args.optimus_root, OPTIMUS_DATA_FILES,
-        args.embeddings_dir, "optimus", optimus_zip
-    )
+    if args.kg in ["all", "optimus"]:
+        print(f"\n--- OptimusKG ({args.optimus_root}) ---")
+        optimus_zip = os.path.join(args.output_dir, "txoptimus_optimus_data.zip")
+        optimus_size = create_zip(
+            args.optimus_root, OPTIMUS_DATA_FILES, OPTIMUS_MODEL_FILES,
+            args.embeddings_dir, "optimus", optimus_zip
+        )
 
     print(f"\n{'=' * 60}")
     print(f" Summary")
     print(f"{'=' * 60}")
-    print(f"  txoptimus_prime_data.zip:   {prime_size:.0f} MB")
-    print(f"  txoptimus_optimus_data.zip: {optimus_size:.0f} MB")
+    if prime_size is not None:
+        print(f"  txoptimus_prime_data.zip:   {prime_size:.0f} MB")
+    if optimus_size is not None:
+        print(f"  txoptimus_optimus_data.zip: {optimus_size:.0f} MB")
     print(f"  Output directory: {args.output_dir}")
     print(f"\n  Next step: Upload these zips to your S3 bucket.")
     print(f"{'=' * 60}")

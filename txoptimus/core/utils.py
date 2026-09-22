@@ -1056,15 +1056,23 @@ def process_df(df_train, edge_dict):
 
 
 def reverse_rel_generation(df, df_valid, unique_rel):
+    # Build the column rename map dynamically based on what columns exist
+    rename_map = {"x_type": "y_type", "x_id": "y_id",
+                  "y_type": "x_type", "y_id": "x_id"}
+    if "x_idx" in df_valid.columns:
+        rename_map["x_idx"] = "y_idx"
+        rename_map["y_idx"] = "x_idx"
+    elif "x_index" in df_valid.columns:
+        rename_map["x_index"] = "y_index"
+        rename_map["y_index"] = "x_index"
+
     chunks = [df_valid]
     for i in unique_rel.values:
+        # Guard against NaN relation types
+        if not isinstance(i[1], str):
+            continue
         temp = df_valid[df_valid.relation == i[1]]
-        temp = temp.rename(columns={"x_type": "y_type", 
-                     "x_id": "y_id", 
-                     "x_idx": "y_idx",
-                     "y_type": "x_type", 
-                     "y_id": "x_id", 
-                     "y_idx": "x_idx"})
+        temp = temp.rename(columns=rename_map)
 
         if i[0] != i[2]:
             # bi identity
