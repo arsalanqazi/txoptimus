@@ -9,13 +9,16 @@ class DataSplitter:
     
     def __init__(self, kg_path=''): 
         self.kg, self.nodes, self.edges = self.load_kg(kg_path)
-        self.edge_index = torch.LongTensor(self.edges[['x_index', 'y_index']].values.T)
         # Build node_id -> node_index mapping from node.csv and join into kg
         node_id = self.nodes['node_id'].astype(str)
         node_idx = self.nodes['node_index']
         id2idx = dict(zip(node_id, node_idx))
         self.kg['x_index'] = self.kg['x_id'].astype(str).map(id2idx)
         self.kg['y_index'] = self.kg['y_id'].astype(str).map(id2idx)
+        # Build edge_index from kg.csv (complete graph) rather than edges.csv
+        # (which may only contain a subset of relation types)
+        kg_edges = self.kg[['x_index', 'y_index']].dropna()
+        self.edge_index = torch.LongTensor(kg_edges.values.astype(int).T)
         self.doid2parent, self.doid2name, self.doid2children = self.load_do()
         self.mondo_xref = pd.read_csv(os.path.join(dirname, 'mondo_references.csv'))
         #self.grouped_diseases = pd.read_csv('kg_grouped_diseases.csv')
@@ -102,8 +105,8 @@ class DataSplitter:
     
     def get_one_hop_edge_group(self, nodes, mask_ratio = 0.1, add_drug_dis=True):
         if add_drug_dis: 
-            x = self.edges.query('x_index in @nodes or y_index in @nodes').query('relation=="contraindication" or relation=="indication" or relation=="off-label use"')
-            drug_dis_edges = x.get(['x_index','y_index']).values.T
+            x = self.kg.query('x_index in @nodes or y_index in @nodes').query('relation=="contraindication" or relation=="indication" or relation=="off-label use"')
+            drug_dis_edges = x.get(['x_index','y_index']).dropna().values.astype(int).T
             print('drug_dis_edges.shape: ', drug_dis_edges.shape)
     
         from torch_geometric.utils import k_hop_subgraph
@@ -128,8 +131,8 @@ class DataSplitter:
             
     def get_edge_group(self, nodes, test_size = 0.05, add_drug_dis=True):
         if add_drug_dis: 
-            x = self.edges.query('x_index in @nodes or y_index in @nodes').query('relation=="contraindication" or relation=="indication" or relation=="off-label use"')
-            drug_dis_edges = x.get(['x_index','y_index']).values.T
+            x = self.kg.query('x_index in @nodes or y_index in @nodes').query('relation=="contraindication" or relation=="indication" or relation=="off-label use"')
+            drug_dis_edges = x.get(['x_index','y_index']).dropna().values.astype(int).T
             print('drug_dis_edges.shape: ', drug_dis_edges.shape)
         
         print('test_size: ', test_size)
