@@ -258,36 +258,55 @@ def run_optimus(disease_ids: list, disease_names: list,
 
 
 def _run_graphmask(tx_gnn, output_dir, prefix, label):
-    """Run GraphMask explainability training."""
+    """Run GraphMask explainability training or load if exists, and extract paths."""
     import gc
     gc.collect()
 
     graphmask_dir = os.path.join(output_dir, f"{prefix}_{label}_graphmask")
     os.makedirs(graphmask_dir, exist_ok=True)
     tx_gnn._checkpoint_dir = graphmask_dir
+    model_path = os.path.join(graphmask_dir, 'graphmask_model.pt')
+    
+    if os.path.exists(model_path):
+        print(f"\n  Found existing GraphMask model at {model_path}. Bypassing training.")
+        try:
+            tx_gnn.load_pretrained_graphmask(graphmask_dir)
+        except Exception as e:
+            print(f"  Failed to load existing model: {e}")
+            return
+    else:
+        print(f"\n  Starting GraphMask training (indication)...")
+        try:
+            metrics = tx_gnn.train_graphmask(
+                relation='indication',
+                learning_rate=3e-4,
+                allowance=0.005,
+                epochs_per_layer=500,
+                penalty_scaling=1,
+                moving_average_window_size=100,
+                valid_per_n=25,
+                no_base=False,
+                gate_hidden_size=32
+            )
+            print(f"  GraphMask completed: {metrics}")
+        except Exception as e:
+            print(f"  GraphMask failed: {e}")
+            return
 
-    print(f"\n  Starting GraphMask training (indication)...")
+        try:
+            tx_gnn.save_graphmask_model(graphmask_dir)
+            print(f"  Saved GraphMask model → {graphmask_dir}")
+        except Exception as e:
+            print(f"  Warning: save_graphmask_model failed: {e}")
+            if hasattr(tx_gnn, 'best_graphmask_model'):
+                import torch
+                torch.save(tx_gnn.best_graphmask_model.state_dict(), model_path)
+                
+    # Interpretation step
+    print("\n  Extracting GraphMask interpretations (edge gate scores)...")
     try:
-        metrics = tx_gnn.train_graphmask(
-            relation='indication',
-            learning_rate=3e-4,
-            allowance=0.005,
-            epochs_per_layer=500,
-            penalty_scaling=1,
-            moving_average_window_size=100,
-            valid_per_n=25,
-            no_base=False,
-            gate_hidden_size=32
-        )
-        print(f"  GraphMask completed: {metrics}")
+        csv_path = os.path.join(graphmask_dir, f"graphmask_gates_{label}.csv")
+        tx_gnn.retrieve_save_gates(csv_path, 'indication')
+        print(f"  Saved interpreted edge scores to → {csv_path}")
     except Exception as e:
-        print(f"  GraphMask failed: {e}")
-
-    try:
-        tx_gnn.save_graphmask_model(graphmask_dir)
-        print(f"  Saved GraphMask model → {graphmask_dir}")
-    except Exception as e:
-        print(f"  Warning: save_graphmask_model failed: {e}")
-        if hasattr(tx_gnn, 'best_graphmask_model'):
-            torch.save(tx_gnn.best_graphmask_model.state_dict(),
-                        os.path.join(graphmask_dir, 'graphmask_model.pt'))
+        print(f"  Failed to extract interpreted paths: {e}")

@@ -15,7 +15,7 @@ class PostInstallCommand(install):
             env_type = "system Python"
 
         print("\n" + "=" * 60)
-        print(" TxOptimus v0.1.3 installed successfully!")
+        print(" TxOptimus v0.1.4 installed successfully!")
         print("=" * 60)
 
         if env_type == "system Python":
@@ -69,7 +69,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name='txoptimus',
-    version='0.1.3',
+    version='0.1.4',
     description='Zero-shot drug repurposing via TxGNN on PrimeKG and OptimusKG',
     long_description=long_description,
     long_description_content_type='text/markdown',
