@@ -306,8 +306,7 @@ def _run_graphmask(tx_gnn, output_dir, prefix, label):
     # Interpretation step
     print("\n  Extracting GraphMask interpretations (edge gate scores)...")
     try:
-        csv_path = os.path.join(graphmask_dir, f"graphmask_gates_{label}.csv")
-        tx_gnn.retrieve_save_gates(csv_path, 'indication')
-        print(f"  Saved interpreted edge scores to → {csv_path}")
+        tx_gnn.retrieve_save_gates(graphmask_dir, 'indication')
+        print(f"  Saved interpreted edge scores to → {graphmask_dir}")
     except Exception as e:
         print(f"  Failed to extract interpreted paths: {e}")

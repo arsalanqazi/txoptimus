@@ -735,7 +735,7 @@ class TxGNN:
             idx2id_all[node_type] = idx2id
             id2name_all[node_type] = id2name
             
-        all_att_df = pd.DataFrame()
+        all_att_df_list = []
         
         G = self.G.to('cpu')
         for etypes in G.canonical_etypes:
@@ -758,7 +758,10 @@ class TxGNN:
             df_temp[relation + '_layer1_att'] = scores[0][etype].reshape(-1,)
             df_temp[relation + '_layer2_att'] = scores[1][etype].reshape(-1,)
 
-            all_att_df = all_att_df.append(df_temp)
+            all_att_df_list.append(df_temp)
+            
+        all_att_df = pd.concat(all_att_df_list, ignore_index=True)
         
         all_att_df.to_pickle(os.path.join(path, 'graphmask_output_' + relation + '.pkl'))
+        all_att_df.to_csv(os.path.join(path, 'graphmask_output_' + relation + '.csv'), index=False)
         return all_att_df
