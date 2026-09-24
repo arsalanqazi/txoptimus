@@ -252,13 +252,105 @@ def run_prime(disease_ids: list, disease_names: list,
     # GraphMask
     if graphmask:
         print(f"\n  ⚠ GraphMask training requires ≥30 GB RAM and may take 2-4 hours on CPU.")
-        _run_graphmask(tx_gnn, output_dir, prefix, "prime")
+        _run_graphmask(tx_gnn, output_dir, prefix, "prime", candidate_rows)
 
     print(f"\n  PrimeKG engine completed in {total_duration/60:.1f} minutes.")
     return results_payload
 
 
-def _run_graphmask(tx_gnn, output_dir, prefix, label):
+def _extract_drug_specific_subgraphs(candidate_rows, graphmask_dir, output_dir, prefix, label, top_n=20):
+    """Parse the raw GraphMask output and extract readable paths for the top candidate drugs."""
+    import pandas as pd
+    
+    csv_path = os.path.join(graphmask_dir, f"graphmask_output_indication.csv")
+    if not os.path.exists(csv_path):
+        print(f"  Cannot extract subgraphs: {csv_path} not found.")
+        return
+        
+    print(f"  Extracting Top-{top_n} drug subgraphs from {csv_path}...")
+    
+    # Get top N unique drugs from candidates
+    # candidate_rows is a list of dicts: {'Disease': ..., 'Rank': ..., 'Drug Name': ...}
+    df_cands = pd.DataFrame(candidate_rows)
+    if len(df_cands) == 0:
+        return
+        
+    top_cands = df_cands[df_cands['Rank'] <= top_n]
+    drugs = top_cands['Drug Name'].str.lower().unique().tolist()
+    diseases = top_cands['Disease'].str.lower().unique().tolist()
+    
+    drug_edges = []
+    disease_edges = []
+    
+    # Stream the large CSV
+    try:
+        for chunk in pd.read_csv(csv_path, chunksize=500_000, low_memory=False):
+            # Edges where x_name or y_name is in drugs
+            m_drug = chunk["x_name"].str.lower().isin(drugs) | chunk["y_name"].str.lower().isin(drugs)
+            if m_drug.any():
+                drug_edges.append(chunk[m_drug])
+                
+            # Edges where x_name or y_name is in diseases
+            m_dis = chunk["x_name"].str.lower().isin(diseases) | chunk["y_name"].str.lower().isin(diseases)
+            if m_dis.any():
+                disease_edges.append(chunk[m_dis])
+                
+    except Exception as e:
+        print(f"  Error reading graphmask CSV: {e}")
+        return
+        
+    if not drug_edges or not disease_edges:
+        print("  No matching edges found in GraphMask output.")
+        return
+        
+    df_drug = pd.concat(drug_edges)
+    df_disease = pd.concat(disease_edges)
+    
+    subgraph_rows = []
+    
+    # Process for each candidate
+    for _, row in top_cands.iterrows():
+        drug = row['Drug Name'].lower()
+        disease = row['Disease'].lower()
+        
+        # 1-hop from drug
+        d_edges = df_drug[(df_drug["x_name"].str.lower() == drug) | (df_drug["y_name"].str.lower() == drug)]
+        d_edges = d_edges.sort_values("indication_layer1_att", ascending=False).head(10)
+        
+        # 1-hop from disease
+        dis_edges = df_disease[(df_disease["x_name"].str.lower() == disease) | (df_disease["y_name"].str.lower() == disease)]
+        dis_edges = dis_edges.sort_values("indication_layer2_att", ascending=False).head(10)
+        
+        # Create readable rows
+        for _, e in d_edges.iterrows():
+            subgraph_rows.append({
+                'Disease': row['Disease'],
+                'Drug Name': row['Drug Name'],
+                'Path Type': 'Drug -> Target/Pathway',
+                'Source': e['x_name'],
+                'Relation': e['relation'],
+                'Target': e['y_name'],
+                'Importance Score': e['indication_layer1_att']
+            })
+            
+        for _, e in dis_edges.iterrows():
+            subgraph_rows.append({
+                'Disease': row['Disease'],
+                'Drug Name': row['Drug Name'],
+                'Path Type': 'Disease -> Biomarker/Pathway',
+                'Source': e['x_name'],
+                'Relation': e['relation'],
+                'Target': e['y_name'],
+                'Importance Score': e['indication_layer2_att']
+            })
+            
+    if subgraph_rows:
+        out_csv = os.path.join(output_dir, f"{prefix}_{label}_drug_subgraphs.csv")
+        pd.DataFrame(subgraph_rows).to_csv(out_csv, index=False)
+        print(f"  Saved drug-specific subgraphs to → {out_csv}")
+        
+        
+def _run_graphmask(tx_gnn, output_dir, prefix, label, candidate_rows):
     """Run GraphMask explainability training or load if exists, and extract paths."""
     import gc
     gc.collect()
@@ -308,5 +400,6 @@ def _run_graphmask(tx_gnn, output_dir, prefix, label):
     try:
         tx_gnn.retrieve_save_gates(graphmask_dir, 'indication')
         print(f"  Saved interpreted edge scores to → {graphmask_dir}")
+        _extract_drug_specific_subgraphs(candidate_rows, graphmask_dir, output_dir, prefix, label)
     except Exception as e:
         print(f"  Failed to extract interpreted paths: {e}")

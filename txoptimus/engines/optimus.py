@@ -400,6 +400,97 @@ def _run_gradient_attribution(tx_gnn, output_dir, prefix, label, disease_centric
                 })
                 
     if attribution_results:
-        csv_path = os.path.join(output_dir, f"{prefix}_{label}_pathway_attribution.csv")
+        graphmask_dir = os.path.join(output_dir, f"{prefix}_{label}_graphmask")
+        os.makedirs(graphmask_dir, exist_ok=True)
+        csv_path = os.path.join(graphmask_dir, f"{prefix}_{label}_pathway_attribution.csv")
         pd.DataFrame(attribution_results).to_csv(csv_path, index=False)
         print(f"  Saved gradient pathway attribution to → {csv_path}")
+
+    # Also extract the explicit 2-hop biological paths (Drug -> Intermediate -> Disease)
+    _extract_drug_specific_subgraphs_optimus(tx_gnn, output_dir, prefix, label, candidate_rows)
+
+def _extract_drug_specific_subgraphs_optimus(tx_gnn, output_dir, prefix, label, candidate_rows, top_n=20):
+    """Find direct and 2-hop paths connecting candidate drugs to the target disease using kg.csv"""
+    import os
+    import pandas as pd
+    
+    kg_path = os.path.join(tx_gnn.data_folder, 'kg.csv')
+    if not os.path.exists(kg_path):
+        print(f"  Cannot extract Optimus subgraphs: {kg_path} not found.")
+        return
+        
+    print(f"\n  Extracting Top-{top_n} drug subgraphs from OptimusKG...")
+    
+    df_cands = pd.DataFrame(candidate_rows)
+    if len(df_cands) == 0:
+        return
+        
+    top_cands = df_cands[df_cands['Rank'] <= top_n]
+    drugs = top_cands['Drug Name'].str.lower().unique().tolist()
+    diseases = top_cands['Disease'].str.lower().unique().tolist()
+    
+    # We will do a fast scan over the kg.csv to find relevant edges
+    drug_edges = []
+    disease_edges = []
+    
+    try:
+        for chunk in pd.read_csv(kg_path, chunksize=1_000_000, low_memory=False):
+            # Optimus kg.csv has x_name, y_name
+            m_drug = chunk["x_name"].astype(str).str.lower().isin(drugs) | chunk["y_name"].astype(str).str.lower().isin(drugs)
+            if m_drug.any():
+                drug_edges.append(chunk[m_drug])
+                
+            m_dis = chunk["x_name"].astype(str).str.lower().isin(diseases) | chunk["y_name"].astype(str).str.lower().isin(diseases)
+            if m_dis.any():
+                disease_edges.append(chunk[m_dis])
+    except Exception as e:
+        print(f"  Error reading {kg_path}: {e}")
+        return
+        
+    if not drug_edges or not disease_edges:
+        print("  No paths found in KG.")
+        return
+        
+    df_drug = pd.concat(drug_edges)
+    df_disease = pd.concat(disease_edges)
+    
+    subgraph_rows = []
+    
+    for _, row in top_cands.iterrows():
+        drug = row['Drug Name'].lower()
+        disease = row['Disease'].lower()
+        
+        # 1-hop from drug
+        d_edges = df_drug[(df_drug["x_name"].str.lower() == drug) | (df_drug["y_name"].str.lower() == drug)]
+        # 1-hop from disease
+        dis_edges = df_disease[(df_disease["x_name"].str.lower() == disease) | (df_disease["y_name"].str.lower() == disease)]
+        
+        # Find intersecting nodes
+        d_nodes = set(d_edges["x_name"].str.lower()).union(set(d_edges["y_name"].str.lower())) - {drug}
+        dis_nodes = set(dis_edges["x_name"].str.lower()).union(set(dis_edges["y_name"].str.lower())) - {disease}
+        
+        intersect = d_nodes.intersection(dis_nodes)
+        
+        # Add up to 10 intersecting pathways/targets
+        for intermediate in list(intersect)[:10]:
+            # find the edge relations
+            d_rel = d_edges[(d_edges["x_name"].str.lower() == intermediate) | (d_edges["y_name"].str.lower() == intermediate)].iloc[0]
+            dis_rel = dis_edges[(dis_edges["x_name"].str.lower() == intermediate) | (dis_edges["y_name"].str.lower() == intermediate)].iloc[0]
+            
+            subgraph_rows.append({
+                'Disease': row['Disease'],
+                'Drug Name': row['Drug Name'],
+                'Path Type': 'Drug -> Intermediate -> Disease',
+                'Drug Node': row['Drug Name'],
+                'Drug-Intermediate Relation': d_rel['relation'],
+                'Intermediate Node': intermediate.capitalize(),
+                'Intermediate-Disease Relation': dis_rel['relation'],
+                'Disease Node': row['Disease']
+            })
+            
+    if subgraph_rows:
+        graphmask_dir = os.path.join(output_dir, f"{prefix}_{label}_graphmask")
+        os.makedirs(graphmask_dir, exist_ok=True)
+        out_csv = os.path.join(graphmask_dir, f"{prefix}_{label}_drug_subgraphs.csv")
+        pd.DataFrame(subgraph_rows).to_csv(out_csv, index=False)
+        print(f"  Saved explicit 2-hop biological paths to → {out_csv}")
