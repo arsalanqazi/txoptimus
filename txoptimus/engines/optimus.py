@@ -25,7 +25,7 @@ def run_optimus(disease_ids: list, disease_names: list,
                 data_dir: str, ckpt_dir: str,
                 output_dir: str, prefix: str,
                 top_k: int = 100, threads: int = 18,
-                graphmask: bool = False):
+                graphmask: bool = False, low_memory: bool = False):
     """
     Run TxGNN evaluation on OptimusKG for the given disease targets.
 
@@ -248,10 +248,14 @@ def run_optimus(disease_ids: list, disease_names: list,
         json.dump(results_payload, f, indent=2)
     print(f"  Saved metrics → {json_path}")
 
-    # GraphMask
+    # GraphMask / Interpretation
     if graphmask:
-        print(f"\n  ⚠ GraphMask training requires ≥30 GB RAM and may take 2-4 hours on CPU.")
-        _run_graphmask(tx_gnn, output_dir, prefix, "optimus")
+        if low_memory:
+            print(f"\n  ⚠ Running low-memory gradient attribution instead of GraphMask.")
+            _run_gradient_attribution(tx_gnn, output_dir, prefix, "optimus", disease_centric_results, candidate_rows)
+        else:
+            print(f"\n  ⚠ GraphMask training requires ≥30 GB RAM and may take 2-4 hours on CPU.")
+            _run_graphmask(tx_gnn, output_dir, prefix, "optimus")
 
     print(f"\n  OptimusKG engine completed in {total_duration/60:.1f} minutes.")
     return results_payload
@@ -309,3 +313,93 @@ def _run_graphmask(tx_gnn, output_dir, prefix, label):
         print(f"  Saved interpreted edge scores to → {graphmask_dir}")
     except Exception as e:
         print(f"  Failed to extract interpreted paths: {e}")
+
+
+def _run_gradient_attribution(tx_gnn, output_dir, prefix, label, disease_centric_results, candidate_rows):
+    """Run low-memory gradient-based pathway attribution."""
+    import gc
+    import torch
+    import pandas as pd
+    
+    print("\n  Starting Gradient Attribution...")
+    G = tx_gnn.G
+    model = tx_gnn.best_model
+    model.eval() # Ensure eval mode
+    
+    # We need idx to id mapping
+    df_directed = tx_gnn.df
+    
+    attribution_results = []
+    
+    for dis_name, dis_info in disease_centric_results.items():
+        disease_id = dis_info['disease_id']
+        
+        # Find disease internal idx
+        disease_rows = df_directed[(df_directed.x_type == 'disease') & (df_directed.x_id.astype(str) == str(disease_id))]
+        if len(disease_rows) == 0:
+            disease_rows = df_directed[(df_directed.y_type == 'disease') & (df_directed.y_id.astype(str) == str(disease_id))]
+            if len(disease_rows) > 0:
+                d_idx = int(disease_rows.iloc[0].y_idx)
+            else:
+                print(f"  Could not find DGL index for disease {dis_name}, skipping.")
+                continue
+        else:
+            d_idx = int(disease_rows.iloc[0].x_idx)
+            
+        print(f"  Processing {dis_name}...")
+        
+        # Forward pass
+        with G.local_scope():
+            input_dict = {ntype: G.nodes[ntype].data['inp'] for ntype in G.ntypes}
+            for v in input_dict.values():
+                v.requires_grad = True # enable grad on inputs
+                
+            h_dict = model.layer1(G, input_dict)
+            h_dict = {k: torch.nn.functional.leaky_relu(h) for k, h in h_dict.items()}
+            h = model.layer2(G, h_dict)
+            
+            rel_idx = model.pred.rel2idx[('drug', 'indication', 'disease')]
+            W_rel = model.pred.W[rel_idx]
+            
+            h_disease_vec = h['disease'][d_idx]
+            h_drugs = h['drug']
+            
+            scores = torch.sum(h_drugs * W_rel * h_disease_vec.unsqueeze(0), dim=1)
+            
+            # Get top K drugs for gradient
+            top_k = min(20, len(scores))
+            top_scores, top_indices = torch.topk(scores, top_k)
+            
+            model.zero_grad()
+            if G.nodes['disease'].data['inp'].grad is not None:
+                G.nodes['disease'].data['inp'].grad.zero_()
+                
+            target = top_scores.sum()
+            target.backward(retain_graph=True)
+            
+            edge_type_importance = {}
+            for etype_name, linear in model.layer1.weight.items():
+                if linear.weight.grad is not None:
+                    edge_type_importance[f"L1:{etype_name}"] = linear.weight.grad.abs().mean().item()
+                    
+            for etype_name, linear in model.layer2.weight.items():
+                if linear.weight.grad is not None:
+                    edge_type_importance[f"L2:{etype_name}"] = linear.weight.grad.abs().mean().item()
+                    
+            if model.pred.W.grad is not None:
+                for rel_name, rel_i in model.pred.rel2idx.items():
+                    edge_type_importance[f"DistMult:{rel_name}"] = model.pred.W.grad[rel_i].abs().mean().item()
+                    
+            sorted_importance = sorted(edge_type_importance.items(), key=lambda x: x[1], reverse=True)
+            for rank, (pathway, grad_mag) in enumerate(sorted_importance[:50]):
+                attribution_results.append({
+                    'Disease': dis_name,
+                    'Rank': rank + 1,
+                    'Pathway / Edge Type': pathway,
+                    'Importance (Grad Magnitude)': grad_mag
+                })
+                
+    if attribution_results:
+        csv_path = os.path.join(output_dir, f"{prefix}_{label}_pathway_attribution.csv")
+        pd.DataFrame(attribution_results).to_csv(csv_path, index=False)
+        print(f"  Saved gradient pathway attribution to → {csv_path}")
