@@ -70,14 +70,19 @@ Matched terms in OPTIMUS:
 Select terms (e.g., '1 3' or 'all'): 1 3
 ```
 
-### 4. Enable explainability
+### 4. Enable explainability & Subgraph Extraction (v0.1.7)
+
+TxOptimus can automatically extract **drug-specific, 2-hop biological subgraphs** (e.g., `Drug -> Target -> Disease`) for your top candidate drugs to explain *why* the model made its prediction.
 
 ```bash
-# Add --graphmask to enable GraphMask pathway attribution
-txoptimus --engine optimus --diseases "oral cavity cancer" --graphmask
+# Enable GraphMask for PrimeKG
+txoptimus --engine prime --diseases "oral cavity cancer" --graphmask
+
+# OptimusKG is too large for standard GraphMask. Use the --low-memory gradient workaround!
+txoptimus --engine optimus --diseases "oral cavity cancer" --graphmask --low-memory
 ```
 
-> **Note:** GraphMask requires ≥30 GB RAM and takes 2-4 hours on CPU.
+> **Note:** Full GraphMask training requires ≥30 GB RAM and takes 2-4 hours on CPU. The `--low-memory` flag for Optimus bypasses this by using gradient attribution and explicit neighborhood intersection.
 
 ## Full CLI Reference
 
@@ -86,6 +91,7 @@ txoptimus --engine optimus --diseases "oral cavity cancer" --graphmask
 | `--engine` | str | `optimus` | `prime`, `optimus`, or `benchmark` |
 | `--diseases` | str[] | *(required)* | Disease terms (fuzzy matched) |
 | `--graphmask` | flag | `False` | Enable GraphMask explainability |
+| `--low-memory` | flag | `False` | Use low-memory integrated gradients for Optimus |
 | `--output_dir` | str | `./txoptimus_output` | Output directory |
 | `--prefix` | str | `txoptimus` | File prefix |
 | `--threads` | int | `18` | CPU threads |
@@ -100,6 +106,7 @@ txoptimus --engine optimus --diseases "oral cavity cancer" --graphmask
 | `{prefix}_{engine}_results.json` | Full metrics (AUROC, AUPRC, per-relation, graph profile) |
 | `{prefix}_{engine}_candidates.csv` | Top-K drug candidates ranked by score |
 | `{prefix}_comparison_report.md` | Side-by-side comparison (benchmark mode only) |
+| `{prefix}_{engine}_drug_subgraphs.csv` | Automated 2-hop biological subgraphs explaining predictions |
 
 ## Citation
 
