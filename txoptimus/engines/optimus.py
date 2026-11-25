@@ -104,6 +104,12 @@ def run_optimus(disease_ids: list, disease_names: list,
     tx_gnn.model = tx_gnn.best_model
     tx_gnn.model.eval()
 
+    # Move the DGL graph to the same device as the model.
+    # model_initialize() leaves G on CPU; we must move it explicitly
+    # since we bypass the training loop where this normally happens.
+    tx_gnn.G = tx_gnn.G.to(device)
+    print(f"  Graph moved to {device}.")
+
     # 3. Global test metrics
     print("\n[3/4] Running Global Test Set Zero-Shot Evaluation...")
     eval_start = time.time()
