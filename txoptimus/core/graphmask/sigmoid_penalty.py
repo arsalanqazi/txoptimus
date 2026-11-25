@@ -23,7 +23,7 @@ class SoftConcrete(torch.nn.Module):
         input_element = input_element + self.loc_bias
         
         penalty = sigmoid(input_element)
-        penalty_not_sum = copy.deepcopy(penalty.detach())
+        penalty_not_sum = penalty.detach()
 
         clipped_s = self.clip(penalty)
         

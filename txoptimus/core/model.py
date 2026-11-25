@@ -6,6 +6,7 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 import dgl.function as fn
 from torch.utils import data
 import pandas as pd
@@ -428,8 +429,12 @@ class HeteroRGCNLayer(nn.Module):
         #self.penalty += len(edges.src['Wh_%s' % etype])/self.num_of_edges * penalty
         #self.penalty += penalty
         self.penalty.append(penalty)
-        
-        self.num_masked += len(torch.where(gate.reshape(-1) != 1)[0])
+
+        masked_cnt = int((gate.reshape(-1) != 1).sum().item())
+        if hasattr(self, '_num_masked_per_etype'):
+            self._num_masked_per_etype[edges._etype] = masked_cnt
+        else:
+            self.num_masked += masked_cnt
         if self.no_base:
             message = gate.unsqueeze(-1) * edges.src['Wh_%s' % etype]
         else:
@@ -449,42 +454,97 @@ class HeteroRGCNLayer(nn.Module):
         return {'m': edges.src['Wh_%s' % etype]}
     
     
+    def _partner_wh_key(self, srctype, etype, dsttype):
+        if srctype == dsttype:
+            return etype
+        if etype[:3] == 'rev':
+            return etype[4:]
+        return 'rev_' + etype
+
+    def _run_etype_graphmask(self, G, srctype, etype, dsttype, Wh_src, Wh_dst, graphmask_mode):
+        src_key = 'Wh_%s' % etype
+        partner_etype = self._partner_wh_key(srctype, etype, dsttype)
+        dst_key = 'Wh_%s' % partner_etype
+
+        with G.local_scope():
+            G.nodes[srctype].data[src_key] = Wh_src
+            if dsttype != srctype or dst_key != src_key:
+                G.nodes[dsttype].data[dst_key] = Wh_dst
+
+            self.penalty = []
+            msg_fn = self.gm_online if graphmask_mode else self.message_func_no_replace
+            G.update_all(msg_fn, fn.mean('m', 'h'), etype=(srctype, etype, dsttype))
+
+            h_dst = G.nodes[dsttype].data['h']
+            if graphmask_mode and self.penalty:
+                et_penalty = torch.stack(self.penalty).reshape(-1,).mean()
+            else:
+                et_penalty = Wh_src.new_zeros(())
+            return h_dst, et_penalty
+
     def graphmask_forward(self, G, feat_dict, graphmask_mode, return_gates, no_base):
         self.no_base = no_base
         self.return_gates = return_gates
         self.penalty = []
         self.num_masked = 0
+        self._num_masked_per_etype = {}
         self.num_of_edges = G.number_of_edges()
-        
-        funcs = {}
+
         etypes_all = G.canonical_etypes
-        
+        Wh_map = {}
         for srctype, etype, dsttype in etypes_all:
-            Wh = self.weight[etype](feat_dict[srctype])
-            G.nodes[srctype].data['Wh_%s' % etype] = Wh
-            
+            Wh_map[(srctype, etype)] = self.weight[etype](feat_dict[srctype])
+
+        use_ckpt = (
+            graphmask_mode
+            and not return_gates
+            and self.training
+            and torch.is_grad_enabled()
+        )
+
+        h_acc = {}
+        penalties = []
         for srctype, etype, dsttype in etypes_all:
-            
-            if graphmask_mode:
-                ## replace the message!
-                funcs[etype] = (self.gm_online, fn.mean('m', 'h'))
+            if G.num_edges((srctype, etype, dsttype)) == 0:
+                continue
+            Wh_src = Wh_map[(srctype, etype)]
+            partner_etype = self._partner_wh_key(srctype, etype, dsttype)
+            Wh_dst = Wh_map[(dsttype, partner_etype)]
+
+            if use_ckpt:
+                def _fn(w_s, w_d, _srctype=srctype, _etype=etype, _dsttype=dsttype):
+                    return self._run_etype_graphmask(
+                        G, _srctype, _etype, _dsttype, w_s, w_d, True
+                    )
+                h_dst, et_penalty = torch.utils.checkpoint.checkpoint(
+                    _fn, Wh_src, Wh_dst, use_reentrant=False
+                )
             else:
-                ## normal propagation!
-                funcs[etype] = (self.message_func_no_replace, fn.mean('m', 'h'))
-                
-        G.multi_update_all(funcs, 'sum')
-        
-        
-        if graphmask_mode:
-            self.penalty = torch.stack(self.penalty).reshape(-1,)
-            #penalty_mean = torch.mean(self.penalty)
-            #penalty_relation_reg = torch.sum(torch.log(self.penalty) * self.penalty)
-            #penalty = penalty_mean + 0.1 * penalty_relation_reg
+                h_dst, et_penalty = self._run_etype_graphmask(
+                    G, srctype, etype, dsttype, Wh_src, Wh_dst, graphmask_mode
+                )
+
+            if graphmask_mode:
+                penalties.append(et_penalty)
+
+            if dsttype in h_acc:
+                h_acc[dsttype] = h_acc[dsttype] + h_dst
+            else:
+                h_acc[dsttype] = h_dst
+
+        for ntype in G.ntypes:
+            if ntype not in h_acc:
+                h_acc[ntype] = feat_dict[ntype].new_zeros((G.num_nodes(ntype), self.out_size))
+
+        self.num_masked = sum(self._num_masked_per_etype.values())
+
+        if graphmask_mode and penalties:
+            self.penalty = torch.stack(penalties).reshape(-1,)
             penalty = torch.mean(self.penalty)
         else:
-            penalty = 0 
+            penalty = 0
 
-        return {ntype : G.nodes[ntype].data['h'] for ntype in G.ntypes}, penalty, self.num_masked
+        return h_acc, penalty, self.num_masked
     
 class HeteroRGCN(nn.Module):
     def __init__(self, G, in_size, hidden_size, out_size, attention, proto, proto_num, sim_measure, bert_measure, agg_measure, num_walks, walk_mode, path_length, split, data_folder, exp_lambda, device):

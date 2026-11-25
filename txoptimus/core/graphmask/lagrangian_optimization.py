@@ -32,13 +32,13 @@ class LagrangianOptimization:
 
         if self.batch_size_multiplier is not None and self.batch_size_multiplier > 1:
             if self.update_counter % self.batch_size_multiplier == 0:
-                self.original_optimizer.zero_grad()
-                self.optimizer_alpha.zero_grad()
+                self.original_optimizer.zero_grad(set_to_none=True)
+                self.optimizer_alpha.zero_grad(set_to_none=True)
 
             self.update_counter += 1
         else:
-            self.original_optimizer.zero_grad()
-            self.optimizer_alpha.zero_grad()
+            self.original_optimizer.zero_grad(set_to_none=True)
+            self.optimizer_alpha.zero_grad(set_to_none=True)
 
         loss = f + torch.nn.functional.softplus(self.alpha) * g
         loss.backward()

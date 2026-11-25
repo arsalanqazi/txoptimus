@@ -708,21 +708,22 @@ class TxGNN:
         
         neg_sampler = Full_Graph_NegSampler(self.G, 1, 'fix_dst', self.device)
         neg_graph = neg_sampler(self.G)
-        original_predictions_pos, original_predictions_neg, _, _ = self.graphmask_model.graphmask_forward(self.G, self.G, neg_graph, graphmask_mode = False, only_relation = relation, no_base = no_base)
-        
-        updated_predictions_pos, updated_predictions_neg, penalty, num_masked = self.graphmask_model.graphmask_forward(self.G, self.G, neg_graph, graphmask_mode = True, only_relation = relation, return_gates = True, no_base = no_base)
-        gates = self.graphmask_model.get_gates()
-        scores = self.graphmask_model.get_gates_scores()
-        penalties = self.graphmask_model.get_gates_penalties()
-        whole_graph = [original_predictions_pos, original_predictions_neg, updated_predictions_pos, updated_predictions_neg, num_masked, gates, scores, penalties]
-        
-        original_predictions_pos, original_predictions_neg, _, _ = self.graphmask_model.graphmask_forward(self.G, self.g_test_pos, self.g_test_neg, graphmask_mode = False, only_relation = relation, no_base = no_base)
-        
-        updated_predictions_pos, updated_predictions_neg, penalty, num_masked = self.graphmask_model.graphmask_forward(self.G, self.g_test_pos, self.g_test_neg, graphmask_mode = True, only_relation = relation, return_gates = True, no_base = no_base)
-        gates = self.graphmask_model.get_gates()
-        scores = self.graphmask_model.get_gates_scores()
-        penalties = self.graphmask_model.get_gates_penalties()
-        test_graph = [original_predictions_pos, original_predictions_neg, updated_predictions_pos, updated_predictions_neg, num_masked, gates, scores, penalties]
+        with torch.no_grad():
+            original_predictions_pos, original_predictions_neg, _, _ = self.graphmask_model.graphmask_forward(self.G, self.G, neg_graph, graphmask_mode = False, only_relation = relation, no_base = no_base)
+            
+            updated_predictions_pos, updated_predictions_neg, penalty, num_masked = self.graphmask_model.graphmask_forward(self.G, self.G, neg_graph, graphmask_mode = True, only_relation = relation, return_gates = True, no_base = no_base)
+            gates = self.graphmask_model.get_gates()
+            scores = self.graphmask_model.get_gates_scores()
+            penalties = self.graphmask_model.get_gates_penalties()
+            whole_graph = [original_predictions_pos, original_predictions_neg, updated_predictions_pos, updated_predictions_neg, num_masked, gates, scores, penalties]
+            
+            original_predictions_pos, original_predictions_neg, _, _ = self.graphmask_model.graphmask_forward(self.G, self.g_test_pos, self.g_test_neg, graphmask_mode = False, only_relation = relation, no_base = no_base)
+            
+            updated_predictions_pos, updated_predictions_neg, penalty, num_masked = self.graphmask_model.graphmask_forward(self.G, self.g_test_pos, self.g_test_neg, graphmask_mode = True, only_relation = relation, return_gates = True, no_base = no_base)
+            gates = self.graphmask_model.get_gates()
+            scores = self.graphmask_model.get_gates_scores()
+            penalties = self.graphmask_model.get_gates_penalties()
+            test_graph = [original_predictions_pos, original_predictions_neg, updated_predictions_pos, updated_predictions_neg, num_masked, gates, scores, penalties]
         
         return whole_graph, test_graph
                 
