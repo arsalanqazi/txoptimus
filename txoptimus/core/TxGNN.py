@@ -535,12 +535,19 @@ class TxGNN:
         
         if "graphmask_model" not in self.__dict__:
             self.graphmask_model = copy.deepcopy(self.best_model)
-            self.best_graphmask_model = copy.deepcopy(self.graphmask_model)
+            self.best_graphmask_model = copy.deepcopy(self.graphmask_model).to('cpu')
             ## add all the parameters for graphmask
             self.graphmask_model.add_graphmask_parameters(self.G, gate_hidden_size = gate_hidden_size)
         else:
             print("Training from checkpoint/pretrained model...")
         
+        # Offload base model from GPU during GraphMask training to save VRAM
+        if str(self.device) != 'cpu' and hasattr(self, 'best_model') and self.best_model is not None:
+            self.best_model.to('cpu')
+            if hasattr(self, 'model') and self.model is not None and self.model is not self.graphmask_model:
+                self.model.to('cpu')
+            torch.cuda.empty_cache()
+
         self.graphmask_model.eval()
         disable_all_gradients(self.graphmask_model)
         
@@ -562,16 +569,21 @@ class TxGNN:
         
         ## iterate over layers. One at a time!
         for layer in reversed(list(range(self.graphmask_model.count_layers()))):
+            if str(self.device) != 'cpu':
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
             self.graphmask_model.enable_layer(layer) ## enable baselines and gates parameters
 
             for epoch in range(epochs_per_layer):
                 self.graphmask_model.train()
                 neg_graph = neg_sampler(self.G)
-                original_predictions_pos, original_predictions_neg, _, _ = self.graphmask_model.graphmask_forward(self.G, self.G, neg_graph, graphmask_mode = False, only_relation = relation, no_base = no_base)
+                with torch.no_grad():
+                    original_predictions_pos, original_predictions_neg, _, _ = self.graphmask_model.graphmask_forward(self.G, self.G, neg_graph, graphmask_mode = False, only_relation = relation, no_base = no_base)
 
-                pos_score = torch.cat([original_predictions_pos[i] for i in etypes_train])
-                neg_score = torch.cat([original_predictions_neg[i] for i in etypes_train])
-                original_predictions = torch.sigmoid(torch.cat((pos_score, neg_score))).to('cpu')
+                    pos_score = torch.cat([original_predictions_pos[i] for i in etypes_train])
+                    neg_score = torch.cat([original_predictions_neg[i] for i in etypes_train])
+                    original_predictions = torch.sigmoid(torch.cat((pos_score, neg_score))).to('cpu')
 
                 updated_predictions_pos, updated_predictions_neg, penalty, num_masked = self.graphmask_model.graphmask_forward(self.G, self.G, neg_graph, graphmask_mode = True, only_relation = relation, no_base = no_base)
                 pos_score = torch.cat([updated_predictions_pos[i] for i in etypes_train])
@@ -619,6 +631,8 @@ class TxGNN:
                 if epoch % 10 == 0:
                     import gc
                     gc.collect()
+                    if str(self.device) != 'cpu':
+                        torch.cuda.empty_cache()
                 
                 if epoch % valid_per_n == 0:
                     loss_sum = evaluate_graphmask(self.graphmask_model, self.G, self.g_valid_pos, self.g_valid_neg, relation, epoch, mode = 'validation', allowance = allowance, penalty_scaling = penalty_scaling, etypes_train = etypes_train, device = self.device, weight_bias_track = self.weight_bias_track, wandb = self.wandb, no_base = no_base)
@@ -626,7 +640,7 @@ class TxGNN:
                     if loss_sum < best_loss_sum:
                         # takes the best checkpoint
                         best_loss_sum = loss_sum
-                        self.best_graphmask_model = copy.deepcopy(self.graphmask_model)
+                        self.best_graphmask_model = copy.deepcopy(self.graphmask_model).to('cpu')
                         # Continuous disk save so progress survives OOM kill
                         if hasattr(self, '_checkpoint_dir') and self._checkpoint_dir:
                             try:
@@ -636,6 +650,7 @@ class TxGNN:
                             except Exception as e:
                                 print(f"Warning: checkpoint save failed: {e}")
             
+        self.best_graphmask_model = self.best_graphmask_model.to(self.device)
         loss_sum, metrics = evaluate_graphmask(self.best_graphmask_model, self.G, self.g_test_pos, self.g_test_neg, relation, epoch, mode = 'testing', allowance = allowance, penalty_scaling = penalty_scaling, etypes_train = etypes_train, device = self.device, weight_bias_track = self.weight_bias_track, wandb = self.wandb, no_base = no_base)
         
         if self.weight_bias_track == 'True':
