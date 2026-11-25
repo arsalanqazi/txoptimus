@@ -57,11 +57,16 @@ def run_optimus(disease_ids: list, disease_names: list,
 
     num_threads = min(os.cpu_count() or 18, threads)
     torch.set_num_threads(num_threads)
-    device = 'cpu'
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     print(f"\n{'='*60}")
     print(f" TxOptimus — OptimusKG Engine")
-    print(f" Threads: {num_threads} | Device: {device}")
+    if device == 'cuda':
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_mem  = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        print(f" Threads: {num_threads} | Device: {device} ({gpu_name}, {gpu_mem:.1f} GB)")
+    else:
+        print(f" Threads: {num_threads} | Device: {device}")
     print(f" Data: {data_dir}")
     print(f" Checkpoint: {ckpt_dir}")
     print(f"{'='*60}")
