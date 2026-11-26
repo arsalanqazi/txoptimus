@@ -482,6 +482,68 @@ class HeteroRGCNLayer(nn.Module):
                 et_penalty = Wh_src.new_zeros(())
             return h_dst, et_penalty
 
+    def _chunked_etype_graphmask(self, G, cetype, Wh_src, Wh_dst, graphmask_mode, return_gates, use_ckpt, edge_chunk_size=500000):
+        srctype, etype, dsttype = cetype
+        u, v = G.edges(etype=cetype)
+        total_edges = u.shape[0]
+        num_dst_nodes = G.num_nodes(dsttype)
+        deg = G.in_degrees(etype=cetype).clamp(min=1).to(dtype=Wh_src.dtype, device=Wh_src.device).unsqueeze(-1)
+
+        gate_list, penalty_list, score_list = [], [], []
+        h_sum = Wh_src.new_zeros((num_dst_nodes, self.out_size))
+        penalty_sum = Wh_src.new_zeros(())
+
+        def _eval_chunk(w_s, w_d, u_c, v_c, chunk_key):
+            src_feat = w_s[u_c]
+            dst_feat = w_d[v_c]
+            if graphmask_mode:
+                gate, c_penalty, c_score, c_penalty_not_sum = self.gate[etype][self.layer]([src_feat, dst_feat])
+                masked_cnt = int((gate.reshape(-1) != 1).sum().item())
+                if hasattr(self, '_num_masked_per_etype'):
+                    self._num_masked_per_etype[chunk_key] = masked_cnt
+                if self.no_base:
+                    msg = gate.unsqueeze(-1) * src_feat
+                else:
+                    msg = gate.unsqueeze(-1) * src_feat + (1 - gate.unsqueeze(-1)) * self.baseline[etype][self.layer].unsqueeze(0)
+                if return_gates:
+                    gate_list.append(gate.detach().cpu())
+                    penalty_list.append(c_penalty_not_sum.detach().cpu())
+                    score_list.append(c_score.detach().cpu())
+                p_sum = c_penalty * u_c.shape[0]
+            else:
+                msg = src_feat
+                p_sum = w_s.new_zeros(())
+
+            h_chunk = w_s.new_zeros((num_dst_nodes, self.out_size)).index_add(0, v_c, msg)
+            return h_chunk, p_sum
+
+        for start in range(0, total_edges, edge_chunk_size):
+            end = min(start + edge_chunk_size, total_edges)
+            u_c = u[start:end]
+            v_c = v[start:end]
+
+            if use_ckpt:
+                def _fn(w_s, w_d, _u=u_c, _v=v_c, _start=start):
+                    return _eval_chunk(w_s, w_d, _u, _v, (cetype, _start))
+
+                h_chunk, p_sum = torch.utils.checkpoint.checkpoint(
+                    _fn, Wh_src, Wh_dst, use_reentrant=False
+                )
+            else:
+                h_chunk, p_sum = _eval_chunk(Wh_src, Wh_dst, u_c, v_c, (cetype, start))
+
+            h_sum = h_sum + h_chunk
+            penalty_sum = penalty_sum + p_sum
+
+        if graphmask_mode and return_gates and gate_list:
+            self.gate_storage[etype] = torch.cat(gate_list, dim=0)
+            self.gate_penalty_storage[etype] = torch.cat(penalty_list, dim=0)
+            self.gate_score_storage[etype] = torch.cat(score_list, dim=0)
+
+        h_dst = h_sum / deg
+        et_penalty = (penalty_sum / total_edges) if graphmask_mode else Wh_src.new_zeros(())
+        return h_dst, et_penalty
+
     def graphmask_forward(self, G, feat_dict, graphmask_mode, return_gates, no_base):
         self.no_base = no_base
         self.return_gates = return_gates
@@ -501,17 +563,25 @@ class HeteroRGCNLayer(nn.Module):
             and self.training
             and torch.is_grad_enabled()
         )
+        edge_chunk_size = 500000
 
         h_acc = {}
         penalties = []
-        for srctype, etype, dsttype in etypes_all:
-            if G.num_edges((srctype, etype, dsttype)) == 0:
+        for cetype in etypes_all:
+            srctype, etype, dsttype = cetype
+            num_e = G.num_edges(cetype)
+            if num_e == 0:
                 continue
             Wh_src = Wh_map[(srctype, etype)]
             partner_etype = self._partner_wh_key(srctype, etype, dsttype)
             Wh_dst = Wh_map[(dsttype, partner_etype)]
 
-            if use_ckpt:
+            can_chunk = (not graphmask_mode) or (not self.gate[etype][self.layer][-1].use_top_k)
+            if can_chunk and num_e > edge_chunk_size:
+                h_dst, et_penalty = self._chunked_etype_graphmask(
+                    G, cetype, Wh_src, Wh_dst, graphmask_mode, return_gates, use_ckpt, edge_chunk_size
+                )
+            elif use_ckpt:
                 def _fn(w_s, w_d, _srctype=srctype, _etype=etype, _dsttype=dsttype):
                     return self._run_etype_graphmask(
                         G, _srctype, _etype, _dsttype, w_s, w_d, True

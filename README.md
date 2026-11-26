@@ -70,7 +70,7 @@ Matched terms in OPTIMUS:
 Select terms (e.g., '1 3' or 'all'): 1 3
 ```
 
-### 4. Enable explainability & Subgraph Extraction (v0.2.2)
+### 4. Enable explainability & Subgraph Extraction (v0.2.3)
 
 TxOptimus can automatically extract **drug-specific, 2-hop biological subgraphs** (e.g., `Drug -> Target -> Disease`) for your top candidate drugs to explain *why* the model made its prediction.
 
