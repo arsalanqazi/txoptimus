@@ -263,7 +263,7 @@ def run_prime(disease_ids: list, disease_names: list,
     # GraphMask
     if graphmask:
         print(f"\n  ⚠ GraphMask training requires ≥30 GB RAM and may take 2-4 hours on CPU.")
-        _run_graphmask(tx_gnn, output_dir, prefix, "prime", candidate_rows)
+        _run_graphmask(tx_gnn, output_dir, prefix, "prime", candidate_rows, ckpt_dir=ckpt_dir)
 
     print(f"\n  PrimeKG engine completed in {total_duration/60:.1f} minutes.")
     return results_payload
@@ -361,7 +361,7 @@ def _extract_drug_specific_subgraphs(candidate_rows, graphmask_dir, output_dir, 
         print(f"  Saved drug-specific subgraphs to → {out_csv}")
         
         
-def _run_graphmask(tx_gnn, output_dir, prefix, label, candidate_rows):
+def _run_graphmask(tx_gnn, output_dir, prefix, label, candidate_rows, ckpt_dir=None):
     """Run GraphMask explainability training or load if exists, and extract paths."""
     import gc
     gc.collect()
@@ -370,6 +370,7 @@ def _run_graphmask(tx_gnn, output_dir, prefix, label, candidate_rows):
     os.makedirs(graphmask_dir, exist_ok=True)
     tx_gnn._checkpoint_dir = graphmask_dir
     model_path = os.path.join(graphmask_dir, 'graphmask_model.pt')
+    bundled_path = os.path.join(ckpt_dir, 'graphmask_model.pt') if ckpt_dir else None
     
     if os.path.exists(model_path):
         print(f"\n  Found existing GraphMask model at {model_path}. Bypassing training.")
@@ -377,6 +378,13 @@ def _run_graphmask(tx_gnn, output_dir, prefix, label, candidate_rows):
             tx_gnn.load_pretrained_graphmask(graphmask_dir)
         except Exception as e:
             print(f"  Failed to load existing model: {e}")
+            return
+    elif bundled_path and os.path.exists(bundled_path):
+        print(f"\n  Found pre-trained GraphMask model at {bundled_path}. Bypassing training.")
+        try:
+            tx_gnn.load_pretrained_graphmask(ckpt_dir)
+        except Exception as e:
+            print(f"  Failed to load bundled GraphMask model: {e}")
             return
     else:
         print(f"\n  Starting GraphMask training (indication)...")

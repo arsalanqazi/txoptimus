@@ -266,13 +266,13 @@ def run_optimus(disease_ids: list, disease_names: list,
             _run_gradient_attribution(tx_gnn, output_dir, prefix, "optimus", disease_centric_results, candidate_rows)
         else:
             print(f"\n  ⚠ GraphMask training requires ≥30 GB RAM and may take 2-4 hours on CPU.")
-            _run_graphmask(tx_gnn, output_dir, prefix, "optimus")
+            _run_graphmask(tx_gnn, output_dir, prefix, "optimus", ckpt_dir=ckpt_dir, candidate_rows=candidate_rows)
 
     print(f"\n  OptimusKG engine completed in {total_duration/60:.1f} minutes.")
     return results_payload
 
 
-def _run_graphmask(tx_gnn, output_dir, prefix, label):
+def _run_graphmask(tx_gnn, output_dir, prefix, label, ckpt_dir=None, candidate_rows=None):
     """Run GraphMask explainability training or load if exists, and extract paths."""
     import gc
     gc.collect()
@@ -281,13 +281,21 @@ def _run_graphmask(tx_gnn, output_dir, prefix, label):
     os.makedirs(graphmask_dir, exist_ok=True)
     tx_gnn._checkpoint_dir = graphmask_dir
     model_path = os.path.join(graphmask_dir, 'graphmask_model.pt')
-    
+    bundled_path = os.path.join(ckpt_dir, 'graphmask_model.pt') if ckpt_dir else None
+
     if os.path.exists(model_path):
         print(f"\n  Found existing GraphMask model at {model_path}. Bypassing training.")
         try:
             tx_gnn.load_pretrained_graphmask(graphmask_dir)
         except Exception as e:
             print(f"  Failed to load existing model: {e}")
+            return
+    elif bundled_path and os.path.exists(bundled_path):
+        print(f"\n  Found pre-trained GraphMask model at {bundled_path}. Bypassing training.")
+        try:
+            tx_gnn.load_pretrained_graphmask(ckpt_dir)
+        except Exception as e:
+            print(f"  Failed to load bundled GraphMask model: {e}")
             return
     else:
         print(f"\n  Starting GraphMask training (indication)...")
@@ -322,6 +330,9 @@ def _run_graphmask(tx_gnn, output_dir, prefix, label):
     try:
         tx_gnn.retrieve_save_gates(graphmask_dir, 'indication')
         print(f"  Saved interpreted edge scores to → {graphmask_dir}")
+        if candidate_rows:
+            from txoptimus.engines.prime import _extract_drug_specific_subgraphs
+            _extract_drug_specific_subgraphs(candidate_rows, graphmask_dir, output_dir, prefix, label)
     except Exception as e:
         print(f"  Failed to extract interpreted paths: {e}")
 

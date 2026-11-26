@@ -141,27 +141,28 @@ class DistMultPredictor(nn.Module):
             scores = {}
             s_l = []
             
+            graph_etypes = set(graph.canonical_etypes)
             if len(graph.canonical_etypes) == 1:
                 etypes_train = graph.canonical_etypes
             else:
                 # Filter to only edge types present in the evaluation graph.
                 # Test/validation graphs may be missing edge types (e.g. contraindication)
                 # if the data split has zero edges for that relation.
-                graph_etypes = set(graph.canonical_etypes)
                 etypes_train = [et for et in self.etypes_dd if et in graph_etypes]
             
             if only_relation is not None:
                 if only_relation == 'indication':
-                    etypes_train = [('drug', 'indication', 'disease'),
-                                    ('disease', 'rev_indication', 'drug')]
+                    rel_etypes = [('drug', 'indication', 'disease'),
+                                  ('disease', 'rev_indication', 'drug')]
                 elif only_relation == 'contraindication':
-                    etypes_train = [('drug', 'contraindication', 'disease'), 
-                                   ('disease', 'rev_contraindication', 'drug')]
+                    rel_etypes = [('drug', 'contraindication', 'disease'), 
+                                  ('disease', 'rev_contraindication', 'drug')]
                 elif only_relation == 'off-label':
-                    etypes_train = [('drug', 'off-label use', 'disease'),
-                                   ('disease', 'rev_off-label use', 'drug')]
+                    rel_etypes = [('drug', 'off-label use', 'disease'),
+                                  ('disease', 'rev_off-label use', 'drug')]
                 else:
                     return ValueError
+                etypes_train = [et for et in rel_etypes if et in graph_etypes and graph.num_edges(et) > 0]
             
             graph.ndata['h'] = h
             

@@ -644,6 +644,9 @@ class TxGNN:
                         # Continuous disk save so progress survives OOM kill
                         if hasattr(self, '_checkpoint_dir') and self._checkpoint_dir:
                             try:
+                                if getattr(self, 'config', None) is not None:
+                                    with open(os.path.join(self._checkpoint_dir, 'config.pkl'), 'wb') as f:
+                                        pickle.dump(self.config, f)
                                 torch.save(self.best_graphmask_model.state_dict(),
                                           os.path.join(self._checkpoint_dir, 'graphmask_model.pt'))
                                 print(f">> Best GraphMask model saved to {self._checkpoint_dir} (loss={best_loss_sum:.4f})")
